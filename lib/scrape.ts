@@ -200,6 +200,8 @@ function extractHeroStatsFromTables($: cheerio.CheerioAPI, limit: number): HeroS
 }
 
 async function parseDotabuffOverview(dotabuffUrl: string): Promise<HeroStat[]> {
+  return [];
+}
   const heroesUrl = buildDotabuffHeroesUrl(dotabuffUrl);
   const heroesHtml = await fetchHtml(heroesUrl);
   const $heroes = cheerio.load(heroesHtml);
@@ -255,6 +257,40 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
 }
 
 async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
+  const dotabuffUrl = buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl);
+
+  const player: PlayerScout = {
+    name,
+    rd2lProfileUrl,
+    dotabuffUrl,
+    comfortHeroes: [],
+    notes: []
+  };
+
+  if (!dotabuffUrl) {
+    player.notes.push('Could not derive Dotabuff URL from RD2L profile URL.');
+    return player;
+  }
+
+  try {
+    const esports = await parseDotabuffEsports(dotabuffUrl, DEFAULT_SEASON_LABEL);
+    player.dotabuffEsportsUrl = esports.url;
+    player.roleSummary = esports.roleSummary;
+
+    // Use esports heroes as the primary hero pool for now
+    if (esports.roleSummary?.heroes?.length) {
+      player.comfortHeroes = esports.roleSummary.heroes;
+    } else {
+      player.notes.push('No esports hero pool found.');
+    }
+  } catch (error) {
+    player.notes.push(
+      error instanceof Error ? error.message : 'Could not parse Dotabuff esports page.'
+    );
+  }
+
+  return player;
+}
   const dotabuffUrl = buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl);
 
   const player: PlayerScout = {
