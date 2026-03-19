@@ -1,33 +1,46 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { DEFAULT_DIVISION_URL } from '@/lib/config';
+import { NextResponse } from 'next/server';
 import { buildDivisionScout } from '@/lib/scrape';
 import { writeCachedDivision } from '@/lib/storage';
 
-function isAuthorized(request: NextRequest): boolean {
-  const cronHeader = request.headers.get('authorization');
-  const secret = process.env.CRON_SECRET;
+const DIVISION_URL = 'https://rd2l.gg/divisions/U-ZTEMOBg';
 
-  if (!secret) return true;
-  return cronHeader === `Bearer ${secret}`;
-}
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-export async function GET(request: NextRequest) {
-  if (!isAuthorized(request)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+export async function POST() {
   try {
-    const data = await buildDivisionScout(DEFAULT_DIVISION_URL);
+    console.log('Refresh started', { divisionUrl: DIVISION_URL });
+
+    const data = await buildDivisionScout(DIVISION_URL);
+
+    console.log('Refresh built data', {
+      divisionName: data.divisionName,
+      seasonName: data.seasonName,
+      teamCount: data.teams?.length ?? 0,
+      firstTeam: data.teams?.[0]?.name ?? null,
+    });
+
     await writeCachedDivision(data);
-    return NextResponse.json({ ok: true, lastUpdated: data.lastUpdated, teamCount: data.teams.length });
+
+    console.log('Refresh saved data successfully');
+
+    return NextResponse.json({
+      ok: true,
+      message: 'Refresh complete. Reload the page in a moment.',
+      meta: {
+        teamCount: data.teams?.length ?? 0,
+        lastUpdated: data.lastUpdated,
+      },
+    });
   } catch (error) {
+    console.error('Refresh failed', error);
+
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Refresh failed' },
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown refresh error',
+      },
       { status: 500 }
     );
   }
-}
-
-export async function POST(request: NextRequest) {
-  return GET(request);
 }
