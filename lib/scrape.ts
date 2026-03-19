@@ -11,20 +11,49 @@ function absoluteUrl(base: string, maybeRelative: string | undefined): string | 
   return new URL(maybeRelative, base).toString();
 }
 
-async function fetchHtml(url: string): Promise<string> {
-  const response = await fetch(url, {
-    headers: {
-      'user-agent': USER_AGENT,
-      'accept-language': 'en-US,en;q=0.9'
-    },
-    next: { revalidate: 0 }
-  });
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+async function fetchHtml(url: string, tries = 5): Promise<string> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'user-agent': USER_AGENT,
+          'accept-language': 'en-US,en;q=0.9',
+          'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'cache-control': 'no-cache',
+          'pragma': 'no-cache'
+        },
+        cache: 'no-store',
+        next: { revalidate: 0 }
+      });
+
+      if (response.ok) {
+        return await response.text();
+      }
+
+      const error = new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText || '<none>'}`);
+
+      // Retry Cloudflare/server problems only
+      if (response.status === 522 || response.status >= 500) {
+        lastError = error;
+      } else {
+        throw error;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < tries) {
+      await sleep(1500 * attempt);
+    }
   }
 
-  return response.text();
+  throw lastError instanceof Error ? lastError : new Error(`Failed to fetch ${url}`);
 }
 
 async function parseDivision(divisionUrl: string): Promise<{ divisionName: string; seasonName: string; teamsUrl: string }> {
@@ -205,7 +234,23 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
 export async function buildDivisionScout(divisionUrl: string): Promise<DivisionScout> {
   const division = await parseDivision(divisionUrl);
   const teams = await parseTeams(division.teamsUrl);
-  const hydratedTeams = await Promise.all(teams.map((team) => parseTeamRoster(team)));
+
+  const hydratedTeams: TeamScout[] = [];
+  for (const team of teams) {
+    try {
+      const hydratedTeam = await parseTeamRoster(team);
+      hydratedTeams.push(hydratedTeam);
+      await sleep(750);
+    } catch (error) {
+      hydratedTeams.push({
+        ...team,
+        players: [],
+        notes: [
+          error instanceof Error ? error.message : 'Failed to parse team roster.'
+        ]
+      } as TeamScout);
+    }
+  }
 
   return {
     divisionName: division.divisionName,
