@@ -5,33 +5,78 @@ import type { DivisionScout, HeroStat, PlayerScout, TeamScout } from '@/lib/type
 const RD2L_BASE = 'https://rd2l.gg';
 const DOTABUFF_BASE = 'https://www.dotabuff.com';
 
-function absoluteUrl(base: string, maybeRelative: string | undefined): string | undefined {
+function absoluteUrl(base: string, maybeRelative?: string): string | undefined {
   if (!maybeRelative) return undefined;
-  if (maybeRelative.startsWith('http://') || maybeRelative.startsWith('https://')) return maybeRelative;
+  if (maybeRelative.startsWith('http://') || maybeRelative.startsWith('https://')) {
+    return maybeRelative;
+  }
   return new URL(maybeRelative, base).toString();
 }
 
-async function fetchHtml(url: string): Promise<string> {
-  const response = await fetch(url, {
-    headers: {
-      'user-agent': USER_AGENT,
-      'accept-language': 'en-US,en;q=0.9'
-    },
-    next: { revalidate: 0 }
-  });
+function cleanText(value?: string): string {
+  return (value || '').replace(/\s+/g, ' ').trim();
+}
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+function parseNumber(value?: string): number | undefined {
+  const text = cleanText(value).replace(/,/g, '');
+  if (!text) return undefined;
+  const num = Number(text);
+  return Number.isFinite(num) ? num : undefined;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchHtml(url: string, tries = 5): Promise<string> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'user-agent': USER_AGENT,
+          'accept-language': 'en-US,en;q=0.9',
+          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'cache-control': 'no-cache',
+          pragma: 'no-cache'
+        },
+        cache: 'no-store',
+        next: { revalidate: 0 }
+      });
+
+      if (response.ok) {
+        return await response.text();
+      }
+
+      const error = new Error(
+        `Failed to fetch ${url}: ${response.status} ${response.statusText || '<none>'}`
+      );
+
+      if (response.status === 522 || response.status >= 500) {
+        lastError = error;
+      } else {
+        throw error;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < tries) {
+      await sleep(1500 * attempt);
+    }
   }
 
-  return response.text();
+  throw lastError instanceof Error ? lastError : new Error(`Failed to fetch ${url}`);
 }
 
 async function parseDivision(
   divisionUrl: string
 ): Promise<{ divisionName: string; seasonName: string; teamsUrl: string }> {
-  // If caller already passed a direct teams URL, skip the flaky division page.
+  // Direct teams URL path: skip flaky division landing page entirely
   if (/\/teams\/?$/.test(divisionUrl)) {
+    const seasonMatch = divisionUrl.match(/\/seasons\/([^/]+)\/divisions\/([^/]+)\/teams\/?$/);
+
     return {
       divisionName: 'EST-TUES',
       seasonName: DEFAULT_SEASON_LABEL,
@@ -78,128 +123,88 @@ async function parseDivision(
     teamsUrl: absoluteTeamsUrl
   };
 }
+
 async function parseTeams(teamsUrl: string): Promise<TeamScout[]> {
   const html = await fetchHtml(teamsUrl);
   const $ = cheerio.load(html);
-  const teamLinks = new Map<string, string>();
 
-  $('a').each((_, el) => {
+  const teamsMap = new Map<string, string>();
+
+  $('a[href*="/teams/"]').each((_, el) => {
+    const name = cleanText($(el).text());
     const href = $(el).attr('href');
-    const text = $(el).text().trim();
-    if (!href || !text) return;
-    if (/\/teams\//.test(href)) {
-      teamLinks.set(text, absoluteUrl(RD2L_BASE, href)!);
-    }
+    const teamUrl = absoluteUrl(RD2L_BASE, href);
+
+    if (!name || !teamUrl) return;
+    teamsMap.set(name, teamUrl);
   });
 
-  const teams: TeamScout[] = [];
-  for (const [name, teamUrl] of teamLinks.entries()) {
-    teams.push({ name, teamUrl, players: [] });
-  }
-
-  return teams;
-}
-
-async function parseTeamRoster(team: TeamScout): Promise<TeamScout> {
-  const html = await fetchHtml(team.teamUrl);
-  const $ = cheerio.load(html);
-
-  const roster: { name: string; rd2lProfileUrl: string }[] = [];
-
-  $('a').each((_, el) => {
-    const href = $(el).attr('href');
-    const text = $(el).text().trim();
-    if (!href || !text) return;
-    if (/\/profile\//.test(href)) {
-      roster.push({ name: text, rd2lProfileUrl: absoluteUrl(RD2L_BASE, href)! });
-    }
-  });
-
-  const uniqueRoster = Array.from(new Map(roster.map((entry) => [entry.rd2lProfileUrl, entry])).values());
-
-  return {
-    ...team,
-    captain: uniqueRoster[0]?.name,
-    players: await Promise.all(uniqueRoster.map((player) => parseRd2lProfile(player.name, player.rd2lProfileUrl)))
-  };
-}
-
-async function parseRd2lProfile(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
-  const html = await fetchHtml(rd2lProfileUrl);
-  const $ = cheerio.load(html);
-
-  let dotabuffUrl: string | undefined;
-  $('a').each((_, el) => {
-    const href = $(el).attr('href');
-    if (href?.includes('dotabuff.com/players/')) {
-      dotabuffUrl = href.startsWith('http') ? href : `https:${href}`;
-    }
-  });
-
-  const player: PlayerScout = {
+  return Array.from(teamsMap.entries()).map(([name, teamUrl]) => ({
     name,
-    rd2lProfileUrl,
-    dotabuffUrl,
-    comfortHeroes: [],
-    notes: []
-  };
+    teamUrl,
+    players: []
+  }));
+}
 
-  if (!dotabuffUrl) {
-    player.notes.push('No Dotabuff link found on RD2L profile.');
-    return player;
+function buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl: string): string | undefined {
+  const playerId = rd2lProfileUrl.match(/\/profile\/(\d+)/)?.[1];
+  if (!playerId) return undefined;
+  return `${DOTABUFF_BASE}/players/${playerId}`;
+}
+
+function buildEsportsUrl(dotabuffUrl: string): string {
+  const playerId = dotabuffUrl.match(/\/players\/(\d+)/)?.[1];
+  if (!playerId) {
+    throw new Error(`Could not extract player ID from Dotabuff URL: ${dotabuffUrl}`);
   }
+  return `${DOTABUFF_BASE}/esports/players/${playerId}`;
+}
 
-  try {
-    const comfortHeroes = await parseDotabuffOverview(dotabuffUrl);
-    player.comfortHeroes = comfortHeroes;
-  } catch (error) {
-    player.notes.push(error instanceof Error ? error.message : 'Could not parse Dotabuff overview.');
-  }
+function extractHeroStatsFromTables($: cheerio.CheerioAPI, limit: number): HeroStat[] {
+  const heroes: HeroStat[] = [];
+  const seen = new Set<string>();
 
-  try {
-    const esports = await parseDotabuffEsports(dotabuffUrl, DEFAULT_SEASON_LABEL);
-    player.dotabuffEsportsUrl = esports.url;
-    player.roleSummary = esports.roleSummary;
-  } catch (error) {
-    player.notes.push(error instanceof Error ? error.message : 'Could not parse Dotabuff esports page.');
-  }
+  $('table tbody tr').each((_, row) => {
+    if (heroes.length >= limit) return;
 
-  return player;
+    const heroLink = $(row).find('a[href*="/heroes/"]').first();
+    if (!heroLink.length) return;
+
+    const heroName = cleanText(heroLink.text());
+    if (!heroName || seen.has(heroName)) return;
+
+    const cells = $(row).find('td');
+    const cellTexts = cells
+      .map((__, cell) => cleanText($(cell).text()))
+      .get()
+      .filter(Boolean) as string[];
+
+    const matchesText = cellTexts.find((text) => /^\d[\d,]*$/.test(text));
+    const winRate = cellTexts.find((text) => /%/.test(text));
+
+    heroes.push({
+      name: heroName,
+      matches: matchesText ? parseNumber(matchesText) : undefined,
+      winRate: winRate || undefined
+    });
+
+    seen.add(heroName);
+  });
+
+  return heroes;
 }
 
 async function parseDotabuffOverview(dotabuffUrl: string): Promise<HeroStat[]> {
   const html = await fetchHtml(dotabuffUrl);
   const $ = cheerio.load(html);
 
-  const heroes: HeroStat[] = [];
-
-  $('table tbody tr').each((_, row) => {
-    const cells = $(row).find('td');
-    const firstCellText = cells.eq(0).text().trim();
-    if (!firstCellText) return;
-
-    const matches = Number(cells.eq(1).text().trim().replace(/,/g, '')) || undefined;
-    const winRate = cells.eq(2).text().trim() || undefined;
-
-    if (firstCellText.length > 1 && heroes.length < 6) {
-      heroes.push({ name: firstCellText, matches, winRate });
-    }
-  });
+  const heroes = extractHeroStatsFromTables($, 6);
 
   if (!heroes.length) {
-    throw new Error(`Could not find most-played heroes on ${dotabuffUrl}`);
+    throw new Error(`Could not find hero rows on ${dotabuffUrl}`);
   }
 
   return heroes;
-}
-
-function buildEsportsUrl(dotabuffUrl: string): string {
-  const playerId = dotabuffUrl.match(/players\/(\d+)/)?.[1];
-  const slug = dotabuffUrl
-    .replace(/^https?:\/\/www\.dotabuff\.com\/players\/\d+/, '')
-    .replace(/^\//, '');
-
-  return `${DOTABUFF_BASE}/esports/players/${playerId}${slug ? `-${slug}` : ''}`;
 }
 
 async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
@@ -207,18 +212,15 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   const html = await fetchHtml(esportsUrl);
   const $ = cheerio.load(html);
 
-  const roleBlock = $('body').text();
-  const primaryRole = /Core Role\s+([^\n]+)/i.exec(roleBlock)?.[1]?.trim();
-  const primaryLane = /(Safe Lane|Mid Lane|Off Lane|Roaming|Support)/i.exec(roleBlock)?.[1]?.trim();
+  const pageText = cleanText($('body').text());
 
-  const heroes: HeroStat[] = [];
-  $('table tbody tr').each((_, row) => {
-    const name = $(row).find('td').eq(0).text().trim();
-    if (!name || heroes.length >= 5) return;
-    const matches = Number($(row).find('td').eq(1).text().trim().replace(/,/g, '')) || undefined;
-    const winRate = $(row).find('td').eq(2).text().trim() || undefined;
-    heroes.push({ name, matches, winRate });
-  });
+  const primaryLane =
+    pageText.match(/\b(Safe Lane|Mid Lane|Off Lane|Roaming|Support)\b/i)?.[1];
+
+  const primaryRole =
+    pageText.match(/\b(Carry|Mid|Offlane|Support|Roamer)\b/i)?.[1] || primaryLane;
+
+  const heroes = extractHeroStatsFromTables($, 5);
 
   return {
     url: esportsUrl,
@@ -232,10 +234,105 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   };
 }
 
+async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
+  const dotabuffUrl = buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl);
+
+  const player: PlayerScout = {
+    name,
+    rd2lProfileUrl,
+    dotabuffUrl,
+    comfortHeroes: [],
+    notes: []
+  };
+
+  if (!dotabuffUrl) {
+    player.notes.push('Could not derive Dotabuff URL from RD2L profile URL.');
+    return player;
+  }
+
+  try {
+    player.comfortHeroes = await parseDotabuffOverview(dotabuffUrl);
+  } catch (error) {
+    player.notes.push(
+      error instanceof Error ? error.message : 'Could not parse Dotabuff overview.'
+    );
+  }
+
+  try {
+    const esports = await parseDotabuffEsports(dotabuffUrl, DEFAULT_SEASON_LABEL);
+    player.dotabuffEsportsUrl = esports.url;
+    player.roleSummary = esports.roleSummary;
+  } catch (error) {
+    player.notes.push(
+      error instanceof Error ? error.message : 'Could not parse Dotabuff esports page.'
+    );
+  }
+
+  return player;
+}
+
+async function parseTeamRoster(team: TeamScout): Promise<TeamScout> {
+  const html = await fetchHtml(team.teamUrl);
+  const $ = cheerio.load(html);
+
+  const roster: Array<{ name: string; rd2lProfileUrl: string }> = [];
+
+  $('a[href*="/profile/"]').each((_, el) => {
+    const name = cleanText($(el).text());
+    const href = $(el).attr('href');
+    const rd2lProfileUrl = absoluteUrl(RD2L_BASE, href);
+
+    if (!name || !rd2lProfileUrl) return;
+    roster.push({ name, rd2lProfileUrl });
+  });
+
+  const uniqueRoster = Array.from(
+    new Map(roster.map((entry) => [entry.rd2lProfileUrl, entry])).values()
+  );
+
+  const players: PlayerScout[] = [];
+
+  for (const player of uniqueRoster) {
+    try {
+      const parsed = await buildPlayerScout(player.name, player.rd2lProfileUrl);
+      players.push(parsed);
+      await sleep(300);
+    } catch (error) {
+      players.push({
+        name: player.name,
+        rd2lProfileUrl: player.rd2lProfileUrl,
+        comfortHeroes: [],
+        notes: [error instanceof Error ? error.message : 'Failed to process player.']
+      });
+    }
+  }
+
+  return {
+    ...team,
+    captain: uniqueRoster[0]?.name,
+    players
+  };
+}
+
 export async function buildDivisionScout(divisionUrl: string): Promise<DivisionScout> {
   const division = await parseDivision(divisionUrl);
   const teams = await parseTeams(division.teamsUrl);
-  const hydratedTeams = await Promise.all(teams.map((team) => parseTeamRoster(team)));
+
+  const hydratedTeams: TeamScout[] = [];
+
+  for (const team of teams) {
+    try {
+      const hydratedTeam = await parseTeamRoster(team);
+      hydratedTeams.push(hydratedTeam);
+      await sleep(750);
+    } catch (error) {
+      hydratedTeams.push({
+        ...team,
+        players: [],
+        notes: [error instanceof Error ? error.message : 'Failed to parse team roster.']
+      } as TeamScout);
+    }
+  }
 
   return {
     divisionName: division.divisionName,
