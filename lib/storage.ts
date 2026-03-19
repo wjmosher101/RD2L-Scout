@@ -41,11 +41,10 @@ async function readBlob(): Promise<DivisionScout | null> {
 
 async function writeBlob(payload: DivisionScout): Promise<void> {
   await put(BLOB_PATH, JSON.stringify(payload, null, 2), {
-    access: 'public',
-    allowOverwrite: true,
-    addRandomSuffix: false,
-    contentType: 'application/json',
-  });
+  access: 'public',
+  addRandomSuffix: false,
+  contentType: 'application/json',
+});
 }
 
 function validatePayload(parsed: unknown): DivisionScout | null {
