@@ -116,11 +116,30 @@ async function parseTeamRoster(team: TeamScout): Promise<TeamScout> {
 
   const uniqueRoster = Array.from(new Map(roster.map((entry) => [entry.rd2lProfileUrl, entry])).values());
 
-  return {
-    ...team,
-    captain: uniqueRoster[0]?.name,
-    players: await Promise.all(uniqueRoster.map((player) => parseRd2lProfile(player.name, player.rd2lProfileUrl)))
-  };
+const players: PlayerScout[] = [];
+
+for (const player of uniqueRoster) {
+  try {
+    const parsedPlayer = await parseRd2lProfile(player.name, player.rd2lProfileUrl);
+    players.push(parsedPlayer);
+    await sleep(500);
+  } catch (error) {
+    players.push({
+      name: player.name,
+      rd2lProfileUrl: player.rd2lProfileUrl,
+      comfortHeroes: [],
+      notes: [
+        error instanceof Error ? error.message : 'Failed to parse RD2L profile.'
+      ]
+    });
+  }
+}
+
+return {
+  ...team,
+  captain: uniqueRoster[0]?.name,
+  players
+};
 }
 
 async function parseRd2lProfile(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
