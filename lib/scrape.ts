@@ -27,17 +27,44 @@ async function fetchHtml(url: string): Promise<string> {
   return response.text();
 }
 
-async function parseDivision(divisionUrl: string): Promise<{ divisionName: string; seasonName: string; teamsUrl: string }> {
+async function parseDivision(
+  divisionUrl: string
+): Promise<{ divisionName: string; seasonName: string; teamsUrl: string }> {
+  // If caller already passed a direct teams URL, skip the flaky division page.
+  if (/\/teams\/?$/.test(divisionUrl)) {
+    return {
+      divisionName: 'EST-TUES',
+      seasonName: DEFAULT_SEASON_LABEL,
+      teamsUrl: divisionUrl
+    };
+  }
+
   const html = await fetchHtml(divisionUrl);
   const $ = cheerio.load(html);
 
-  const divisionName = $('h3').first().text().trim() || 'RD2L Division';
-  const activeSeasonRow = $('h4:contains("Active Season")').nextAll('table').first().find('tr').eq(1);
-  const seasonName = activeSeasonRow.find('td').first().text().trim() || 'Season 37';
+  const divisionName = cleanText($('h3').first().text()) || 'RD2L Division';
 
-  let teamsUrl = activeSeasonRow.find('a').filter((_, el) => $(el).text().trim().toLowerCase() === 'teams').attr('href');
+  const activeSeasonRow = $('h4')
+    .filter((_, el) => cleanText($(el).text()).toLowerCase() === 'active season')
+    .first()
+    .nextAll('table')
+    .first()
+    .find('tr')
+    .eq(1);
+
+  const seasonName =
+    cleanText(activeSeasonRow.find('td').first().text()) || DEFAULT_SEASON_LABEL;
+
+  let teamsUrl = activeSeasonRow
+    .find('a')
+    .filter((_, el) => cleanText($(el).text()).toLowerCase() === 'teams')
+    .attr('href');
+
   if (!teamsUrl) {
-    teamsUrl = $('a').filter((_, el) => $(el).text().trim().toLowerCase() === 'teams').first().attr('href');
+    teamsUrl = $('a')
+      .filter((_, el) => cleanText($(el).text()).toLowerCase() === 'teams')
+      .first()
+      .attr('href');
   }
 
   const absoluteTeamsUrl = absoluteUrl(RD2L_BASE, teamsUrl);
@@ -45,9 +72,12 @@ async function parseDivision(divisionUrl: string): Promise<{ divisionName: strin
     throw new Error(`Could not find teams link on division page: ${divisionUrl}`);
   }
 
-  return { divisionName, seasonName, teamsUrl: absoluteTeamsUrl };
+  return {
+    divisionName,
+    seasonName,
+    teamsUrl: absoluteTeamsUrl
+  };
 }
-
 async function parseTeams(teamsUrl: string): Promise<TeamScout[]> {
   const html = await fetchHtml(teamsUrl);
   const $ = cheerio.load(html);
