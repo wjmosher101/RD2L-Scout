@@ -1,9 +1,10 @@
+import type { CSSProperties } from 'react';
 import { RefreshButton } from '@/components/RefreshButton';
 import { DEFAULT_DIVISION_URL, DEFAULT_SEASON_LABEL } from '@/lib/config';
 import { readCachedDivision } from '@/lib/storage';
 import type { HeroStat, PlayerScout, TeamScout } from '@/lib/types';
 
-function cardStyle(): React.CSSProperties {
+function cardStyle(): CSSProperties {
   return {
     background: 'linear-gradient(180deg, rgba(19,18,31,0.96), rgba(12,12,22,0.96))',
     border: '1px solid rgba(127, 29, 29, 0.45)',
@@ -13,7 +14,7 @@ function cardStyle(): React.CSSProperties {
   };
 }
 
-function badgeStyle(background: string, color = '#f8fafc'): React.CSSProperties {
+function badgeStyle(background: string, color = '#f8fafc'): CSSProperties {
   return {
     display: 'inline-flex',
     alignItems: 'center',

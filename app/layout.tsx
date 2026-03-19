@@ -1,6 +1,7 @@
+import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
-export const metadata = {
+export const metadata: Metadata = {
   title: 'RD2L Scout',
   description: 'Scouting dashboard for RD2L teams and Dotabuff profiles.'
 };
