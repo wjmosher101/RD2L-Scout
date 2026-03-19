@@ -73,10 +73,7 @@ async function fetchHtml(url: string, tries = 5): Promise<string> {
 async function parseDivision(
   divisionUrl: string
 ): Promise<{ divisionName: string; seasonName: string; teamsUrl: string }> {
-  // Direct teams URL path: skip flaky division landing page entirely
   if (/\/teams\/?$/.test(divisionUrl)) {
-    const seasonMatch = divisionUrl.match(/\/seasons\/([^/]+)\/divisions\/([^/]+)\/teams\/?$/);
-
     return {
       divisionName: 'EST-TUES',
       seasonName: DEFAULT_SEASON_LABEL,
@@ -152,12 +149,20 @@ function buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl: string): string | undef
   return `${DOTABUFF_BASE}/players/${playerId}`;
 }
 
+function buildDotabuffHeroesUrl(dotabuffUrl: string): string {
+  return `${dotabuffUrl.replace(/\/$/, '')}/heroes`;
+}
+
 function buildEsportsUrl(dotabuffUrl: string): string {
   const playerId = dotabuffUrl.match(/\/players\/(\d+)/)?.[1];
   if (!playerId) {
     throw new Error(`Could not extract player ID from Dotabuff URL: ${dotabuffUrl}`);
   }
   return `${DOTABUFF_BASE}/esports/players/${playerId}`;
+}
+
+function buildEsportsHeroesUrl(dotabuffUrl: string): string {
+  return `${buildEsportsUrl(dotabuffUrl)}/heroes`;
 }
 
 function extractHeroStatsFromTables($: cheerio.CheerioAPI, limit: number): HeroStat[] {
@@ -195,16 +200,24 @@ function extractHeroStatsFromTables($: cheerio.CheerioAPI, limit: number): HeroS
 }
 
 async function parseDotabuffOverview(dotabuffUrl: string): Promise<HeroStat[]> {
-  const html = await fetchHtml(dotabuffUrl);
-  const $ = cheerio.load(html);
+  const heroesUrl = buildDotabuffHeroesUrl(dotabuffUrl);
+  const heroesHtml = await fetchHtml(heroesUrl);
+  const $heroes = cheerio.load(heroesHtml);
 
-  const heroes = extractHeroStatsFromTables($, 6);
-
-  if (!heroes.length) {
-    throw new Error(`Could not find hero rows on ${dotabuffUrl}`);
+  const heroesFromHeroesPage = extractHeroStatsFromTables($heroes, 6);
+  if (heroesFromHeroesPage.length) {
+    return heroesFromHeroesPage;
   }
 
-  return heroes;
+  const overviewHtml = await fetchHtml(dotabuffUrl);
+  const $overview = cheerio.load(overviewHtml);
+  const heroesFromOverview = extractHeroStatsFromTables($overview, 6);
+
+  if (!heroesFromOverview.length) {
+    throw new Error(`Could not find hero rows on ${heroesUrl}`);
+  }
+
+  return heroesFromOverview;
 }
 
 async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
@@ -220,7 +233,14 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   const primaryRole =
     pageText.match(/\b(Carry|Mid|Offlane|Support|Roamer)\b/i)?.[1] || primaryLane;
 
-  const heroes = extractHeroStatsFromTables($, 5);
+  let heroes = extractHeroStatsFromTables($, 5);
+
+  if (!heroes.length) {
+    const esportsHeroesUrl = buildEsportsHeroesUrl(dotabuffUrl);
+    const heroesHtml = await fetchHtml(esportsHeroesUrl);
+    const $heroes = cheerio.load(heroesHtml);
+    heroes = extractHeroStatsFromTables($heroes, 5);
+  }
 
   return {
     url: esportsUrl,
@@ -250,22 +270,30 @@ async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<P
     return player;
   }
 
-  try {
-    player.comfortHeroes = await parseDotabuffOverview(dotabuffUrl);
-  } catch (error) {
-    player.notes.push(
-      error instanceof Error ? error.message : 'Could not parse Dotabuff overview.'
-    );
-  }
+  let esportsRoleSummary: PlayerScout['roleSummary'] | undefined;
 
   try {
     const esports = await parseDotabuffEsports(dotabuffUrl, DEFAULT_SEASON_LABEL);
     player.dotabuffEsportsUrl = esports.url;
     player.roleSummary = esports.roleSummary;
+    esportsRoleSummary = esports.roleSummary;
   } catch (error) {
     player.notes.push(
       error instanceof Error ? error.message : 'Could not parse Dotabuff esports page.'
     );
+  }
+
+  try {
+    player.comfortHeroes = await parseDotabuffOverview(dotabuffUrl);
+  } catch (error) {
+    if (esportsRoleSummary?.heroes?.length) {
+      player.comfortHeroes = esportsRoleSummary.heroes;
+      player.notes.push('Using esports hero pool as fallback for comfort heroes.');
+    } else {
+      player.notes.push(
+        error instanceof Error ? error.message : 'Could not parse Dotabuff overview.'
+      );
+    }
   }
 
   return player;
