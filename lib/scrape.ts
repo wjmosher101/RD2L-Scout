@@ -257,6 +257,7 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
 }
 
 async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
+async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
   const dotabuffUrl = buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl);
 
   const player: PlayerScout = {
@@ -277,9 +278,9 @@ async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<P
     player.dotabuffEsportsUrl = esports.url;
     player.roleSummary = esports.roleSummary;
 
-    // Use esports heroes as the primary hero pool for now
     if (esports.roleSummary?.heroes?.length) {
       player.comfortHeroes = esports.roleSummary.heroes;
+      player.notes.push('Using esports hero pool as primary comfort data.');
     } else {
       player.notes.push('No esports hero pool found.');
     }
@@ -287,49 +288,6 @@ async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<P
     player.notes.push(
       error instanceof Error ? error.message : 'Could not parse Dotabuff esports page.'
     );
-  }
-
-  return player;
-}
-  const dotabuffUrl = buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl);
-
-  const player: PlayerScout = {
-    name,
-    rd2lProfileUrl,
-    dotabuffUrl,
-    comfortHeroes: [],
-    notes: []
-  };
-
-  if (!dotabuffUrl) {
-    player.notes.push('Could not derive Dotabuff URL from RD2L profile URL.');
-    return player;
-  }
-
-  let esportsRoleSummary: PlayerScout['roleSummary'] | undefined;
-
-  try {
-    const esports = await parseDotabuffEsports(dotabuffUrl, DEFAULT_SEASON_LABEL);
-    player.dotabuffEsportsUrl = esports.url;
-    player.roleSummary = esports.roleSummary;
-    esportsRoleSummary = esports.roleSummary;
-  } catch (error) {
-    player.notes.push(
-      error instanceof Error ? error.message : 'Could not parse Dotabuff esports page.'
-    );
-  }
-
-  try {
-    player.comfortHeroes = await parseDotabuffOverview(dotabuffUrl);
-  } catch (error) {
-    if (esportsRoleSummary?.heroes?.length) {
-      player.comfortHeroes = esportsRoleSummary.heroes;
-      player.notes.push('Using esports hero pool as fallback for comfort heroes.');
-    } else {
-      player.notes.push(
-        error instanceof Error ? error.message : 'Could not parse Dotabuff overview.'
-      );
-    }
   }
 
   return player;
@@ -360,11 +318,12 @@ async function parseTeamRoster(team: TeamScout): Promise<TeamScout> {
     try {
       const parsed = await buildPlayerScout(player.name, player.rd2lProfileUrl);
       players.push(parsed);
-      await sleep(300);
+      await sleep(250);
     } catch (error) {
       players.push({
         name: player.name,
         rd2lProfileUrl: player.rd2lProfileUrl,
+        dotabuffUrl: buildDotabuffUrlFromRd2lProfile(player.rd2lProfileUrl),
         comfortHeroes: [],
         notes: [error instanceof Error ? error.message : 'Failed to process player.']
       });
@@ -388,7 +347,7 @@ export async function buildDivisionScout(divisionUrl: string): Promise<DivisionS
     try {
       const hydratedTeam = await parseTeamRoster(team);
       hydratedTeams.push(hydratedTeam);
-      await sleep(750);
+      await sleep(500);
     } catch (error) {
       hydratedTeams.push({
         ...team,
