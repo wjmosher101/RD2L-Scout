@@ -16,6 +16,50 @@ async function sleep(ms: number): Promise<void> {
 }
 
 async function fetchHtml(url: string, tries = 5): Promise<string> {
+  function cleanText(value: string | undefined): string | undefined {
+  const text = value?.replace(/\s+/g, ' ').trim();
+  return text ? text : undefined;
+}
+
+function parseNumber(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const num = Number(value.replace(/,/g, '').trim());
+  return Number.isFinite(num) ? num : undefined;
+}
+
+function extractHeroRows($: cheerio.CheerioAPI, limit = 6): HeroStat[] {
+  const heroes: HeroStat[] = [];
+
+  $('table tbody tr').each((_, row) => {
+    if (heroes.length >= limit) return;
+
+    const heroLink = $(row).find('a[href*="/heroes/"]').first();
+    if (!heroLink.length) return;
+
+    const name = cleanText(heroLink.text());
+    if (!name) return;
+
+    const cells = $(row).find('td');
+    const numericTexts = cells
+      .map((__, cell) => cleanText($(cell).text()))
+      .get()
+      .filter(Boolean) as string[];
+
+    const matches = numericTexts
+      .map((text) => parseNumber(text))
+      .find((value) => value !== undefined);
+
+    const winRate = numericTexts.find((text) => /%/.test(text));
+
+    heroes.push({
+      name,
+      matches,
+      winRate
+    });
+  });
+
+  return heroes;
+}
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= tries; attempt++) {
@@ -189,23 +233,10 @@ async function parseDotabuffOverview(dotabuffUrl: string): Promise<HeroStat[]> {
   const html = await fetchHtml(dotabuffUrl);
   const $ = cheerio.load(html);
 
-  const heroes: HeroStat[] = [];
-
-  $('table tbody tr').each((_, row) => {
-    const cells = $(row).find('td');
-    const firstCellText = cells.eq(0).text().trim();
-    if (!firstCellText) return;
-
-    const matches = Number(cells.eq(1).text().trim().replace(/,/g, '')) || undefined;
-    const winRate = cells.eq(2).text().trim() || undefined;
-
-    if (firstCellText.length > 1 && heroes.length < 6) {
-      heroes.push({ name: firstCellText, matches, winRate });
-    }
-  });
+  const heroes = extractHeroRows($, 6);
 
   if (!heroes.length) {
-    throw new Error(`Could not find most-played heroes on ${dotabuffUrl}`);
+    throw new Error(`Could not find hero rows on ${dotabuffUrl}`);
   }
 
   return heroes;
@@ -225,18 +256,15 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   const html = await fetchHtml(esportsUrl);
   const $ = cheerio.load(html);
 
-  const roleBlock = $('body').text();
-  const primaryRole = /Core Role\s+([^\n]+)/i.exec(roleBlock)?.[1]?.trim();
-  const primaryLane = /(Safe Lane|Mid Lane|Off Lane|Roaming|Support)/i.exec(roleBlock)?.[1]?.trim();
+  const pageText = cleanText($('body').text()) || '';
 
-  const heroes: HeroStat[] = [];
-  $('table tbody tr').each((_, row) => {
-    const name = $(row).find('td').eq(0).text().trim();
-    if (!name || heroes.length >= 5) return;
-    const matches = Number($(row).find('td').eq(1).text().trim().replace(/,/g, '')) || undefined;
-    const winRate = $(row).find('td').eq(2).text().trim() || undefined;
-    heroes.push({ name, matches, winRate });
-  });
+  const primaryLane =
+    pageText.match(/\b(Safe Lane|Mid Lane|Off Lane|Roaming|Support)\b/i)?.[1];
+
+  const primaryRole =
+    pageText.match(/\b(Carry|Mid|Offlane|Support|Roamer)\b/i)?.[1] || primaryLane;
+
+  const heroes = extractHeroRows($, 5);
 
   return {
     url: esportsUrl,
