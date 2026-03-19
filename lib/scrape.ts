@@ -81,7 +81,6 @@ async function fetchHtml(url: string, tries = 3): Promise<string> {
 async function parseDivision(
   divisionUrl: string
 ): Promise<{ divisionName: string; seasonName: string; teamsUrl: string }> {
-  // Preferred path: direct teams URL, which skips the flaky division landing page.
   if (/\/teams\/?$/.test(divisionUrl)) {
     return {
       divisionName: 'EST-TUES',
@@ -200,6 +199,55 @@ function extractHeroStatsFromTables($: cheerio.CheerioAPI, limit: number): HeroS
   return heroes;
 }
 
+function extractHeroStatsFromEsportsText(pageText: string, limit = 5): HeroStat[] {
+  const heroes: HeroStat[] = [];
+
+  const start = pageText.indexOf('Most Played Heroes');
+  const end = pageText.indexOf('Recent Matches');
+
+  if (start === -1 || end === -1 || end <= start) {
+    return heroes;
+  }
+
+  const block = pageText.slice(start, end);
+  const regex = /([A-Z][A-Za-z' -]+?)\s+(\d{1,4})\s+(\d{1,3}(?:\.\d{1,2})?%)/g;
+
+  let match: RegExpExecArray | null;
+  const seen = new Set<string>();
+
+  while ((match = regex.exec(block)) !== null) {
+    const name = cleanText(match[1]);
+    const matches = parseNumber(match[2]);
+    const winRate = match[3];
+
+    if (!name || seen.has(name)) continue;
+
+    if (
+      [
+        'Most Played Heroes',
+        'Overview Farm',
+        'Hero Matches Win',
+        'Core Role',
+        'Recent Matches'
+      ].includes(name)
+    ) {
+      continue;
+    }
+
+    heroes.push({
+      name,
+      matches,
+      winRate
+    });
+
+    seen.add(name);
+
+    if (heroes.length >= limit) break;
+  }
+
+  return heroes;
+}
+
 async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   const esportsUrl = buildEsportsUrl(dotabuffUrl);
   const html = await fetchHtml(esportsUrl);
@@ -213,7 +261,11 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   const primaryRole =
     pageText.match(/\b(Carry|Mid|Offlane|Support|Roamer)\b/i)?.[1] || primaryLane;
 
-  const heroes = extractHeroStatsFromTables($, 5);
+  let heroes = extractHeroStatsFromEsportsText(pageText, 5);
+
+  if (!heroes.length) {
+    heroes = extractHeroStatsFromTables($, 5);
+  }
 
   return {
     url: esportsUrl,
