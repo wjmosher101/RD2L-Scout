@@ -16,7 +16,7 @@ async function sleep(ms: number): Promise<void> {
 }
 
 async function fetchHtml(url: string, tries = 5): Promise<string> {
-  function cleanText(value: string | undefined): string | undefined {
+function cleanText(value: string | undefined): string | undefined {
   const text = value?.replace(/\s+/g, ' ').trim();
   return text ? text : undefined;
 }
