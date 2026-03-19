@@ -283,21 +283,51 @@ export async function buildDivisionScout(divisionUrl: string): Promise<DivisionS
   const teams = await parseTeams(division.teamsUrl);
 
   const hydratedTeams: TeamScout[] = [];
-  for (const team of teams) {
-    try {
-      const hydratedTeam = await parseTeamRoster(team);
-      hydratedTeams.push(hydratedTeam);
-      await sleep(750);
-    } catch (error) {
-      hydratedTeams.push({
-        ...team,
-        players: [],
-        notes: [
-          error instanceof Error ? error.message : 'Failed to parse team roster.'
-        ]
-      } as TeamScout);
+for (const player of uniqueRoster) {
+  try {
+    // 🔥 Extract player ID directly from RD2L profile URL
+    const playerId = player.rd2lProfileUrl.match(/profile\/(\d+)/)?.[1];
+
+    if (!playerId) {
+      throw new Error('Could not extract player ID');
     }
+
+    const dotabuffUrl = `https://www.dotabuff.com/players/${playerId}`;
+
+    const parsedPlayer: PlayerScout = {
+      name: player.name,
+      rd2lProfileUrl: player.rd2lProfileUrl,
+      dotabuffUrl,
+      comfortHeroes: [],
+      notes: []
+    };
+
+    // 👇 still use your existing Dotabuff parsers
+    try {
+      parsedPlayer.comfortHeroes = await parseDotabuffOverview(dotabuffUrl);
+    } catch (error) {
+      parsedPlayer.notes.push('Failed to load Dotabuff overview');
+    }
+
+    try {
+      const esports = await parseDotabuffEsports(dotabuffUrl, DEFAULT_SEASON_LABEL);
+      parsedPlayer.dotabuffEsportsUrl = esports.url;
+      parsedPlayer.roleSummary = esports.roleSummary;
+    } catch (error) {
+      parsedPlayer.notes.push('Failed to load Dotabuff esports');
+    }
+
+    players.push(parsedPlayer);
+    await sleep(300); // faster now
+  } catch (error) {
+    players.push({
+      name: player.name,
+      rd2lProfileUrl: player.rd2lProfileUrl,
+      comfortHeroes: [],
+      notes: ['Failed to process player']
+    });
   }
+}
 
   return {
     divisionName: division.divisionName,
