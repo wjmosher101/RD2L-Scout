@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { buildDivisionScout } from '@/lib/scrape';
 import { writeCachedDivision } from '@/lib/storage';
 
-const DIVISION_URL = 'https://rd2l.gg/divisions/U-ZTEMOBg';
+const DIVISION_URL = 'https://rd2l.gg/seasons/7lNqsbRC2/divisions/U-ZTEMOBg/teams';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
