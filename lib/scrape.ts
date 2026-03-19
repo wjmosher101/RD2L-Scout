@@ -28,10 +28,13 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchHtml(url: string, tries = 5): Promise<string> {
+async function fetchHtml(url: string, tries = 3): Promise<string> {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= tries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
     try {
       const response = await fetch(url, {
         headers: {
@@ -42,8 +45,11 @@ async function fetchHtml(url: string, tries = 5): Promise<string> {
           pragma: 'no-cache'
         },
         cache: 'no-store',
-        next: { revalidate: 0 }
+        next: { revalidate: 0 },
+        signal: controller.signal
       });
+
+      clearTimeout(timeout);
 
       if (response.ok) {
         return await response.text();
@@ -59,11 +65,13 @@ async function fetchHtml(url: string, tries = 5): Promise<string> {
         throw error;
       }
     } catch (error) {
-      lastError = error;
+      clearTimeout(timeout);
+      lastError =
+        error instanceof Error ? error : new Error(`Failed to fetch ${url}`);
     }
 
     if (attempt < tries) {
-      await sleep(1500 * attempt);
+      await sleep(1000 * attempt);
     }
   }
 
@@ -73,6 +81,7 @@ async function fetchHtml(url: string, tries = 5): Promise<string> {
 async function parseDivision(
   divisionUrl: string
 ): Promise<{ divisionName: string; seasonName: string; teamsUrl: string }> {
+  // Preferred path: direct teams URL, which skips the flaky division landing page.
   if (/\/teams\/?$/.test(divisionUrl)) {
     return {
       divisionName: 'EST-TUES',
@@ -149,20 +158,12 @@ function buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl: string): string | undef
   return `${DOTABUFF_BASE}/players/${playerId}`;
 }
 
-function buildDotabuffHeroesUrl(dotabuffUrl: string): string {
-  return `${dotabuffUrl.replace(/\/$/, '')}/heroes`;
-}
-
 function buildEsportsUrl(dotabuffUrl: string): string {
   const playerId = dotabuffUrl.match(/\/players\/(\d+)/)?.[1];
   if (!playerId) {
     throw new Error(`Could not extract player ID from Dotabuff URL: ${dotabuffUrl}`);
   }
   return `${DOTABUFF_BASE}/esports/players/${playerId}`;
-}
-
-function buildEsportsHeroesUrl(dotabuffUrl: string): string {
-  return `${buildEsportsUrl(dotabuffUrl)}/heroes`;
 }
 
 function extractHeroStatsFromTables($: cheerio.CheerioAPI, limit: number): HeroStat[] {
@@ -199,29 +200,6 @@ function extractHeroStatsFromTables($: cheerio.CheerioAPI, limit: number): HeroS
   return heroes;
 }
 
-async function parseDotabuffOverview(dotabuffUrl: string): Promise<HeroStat[]> {
-  return [];
-}
-  const heroesUrl = buildDotabuffHeroesUrl(dotabuffUrl);
-  const heroesHtml = await fetchHtml(heroesUrl);
-  const $heroes = cheerio.load(heroesHtml);
-
-  const heroesFromHeroesPage = extractHeroStatsFromTables($heroes, 6);
-  if (heroesFromHeroesPage.length) {
-    return heroesFromHeroesPage;
-  }
-
-  const overviewHtml = await fetchHtml(dotabuffUrl);
-  const $overview = cheerio.load(overviewHtml);
-  const heroesFromOverview = extractHeroStatsFromTables($overview, 6);
-
-  if (!heroesFromOverview.length) {
-    throw new Error(`Could not find hero rows on ${heroesUrl}`);
-  }
-
-  return heroesFromOverview;
-}
-
 async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   const esportsUrl = buildEsportsUrl(dotabuffUrl);
   const html = await fetchHtml(esportsUrl);
@@ -235,14 +213,7 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   const primaryRole =
     pageText.match(/\b(Carry|Mid|Offlane|Support|Roamer)\b/i)?.[1] || primaryLane;
 
-  let heroes = extractHeroStatsFromTables($, 5);
-
-  if (!heroes.length) {
-    const esportsHeroesUrl = buildEsportsHeroesUrl(dotabuffUrl);
-    const heroesHtml = await fetchHtml(esportsHeroesUrl);
-    const $heroes = cheerio.load(heroesHtml);
-    heroes = extractHeroStatsFromTables($heroes, 5);
-  }
+  const heroes = extractHeroStatsFromTables($, 5);
 
   return {
     url: esportsUrl,
@@ -256,7 +227,6 @@ async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
   };
 }
 
-async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
 async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
   const dotabuffUrl = buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl);
 
