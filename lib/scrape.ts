@@ -228,7 +228,50 @@ async function parseRd2lProfile(name: string, rd2lProfileUrl: string): Promise<P
 
   return player;
 }
+function cleanText(value: string | undefined): string | undefined {
+  const text = value?.replace(/\s+/g, ' ').trim();
+  return text ? text : undefined;
+}
 
+function parseNumber(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const num = Number(value.replace(/,/g, '').trim());
+  return Number.isFinite(num) ? num : undefined;
+}
+
+function extractHeroRows($: cheerio.CheerioAPI, limit = 6): HeroStat[] {
+  const heroes: HeroStat[] = [];
+
+  $('table tbody tr').each((_, row) => {
+    if (heroes.length >= limit) return;
+
+    const heroLink = $(row).find('a[href*="/heroes/"]').first();
+    if (!heroLink.length) return;
+
+    const name = cleanText(heroLink.text());
+    if (!name) return;
+
+    const cells = $(row).find('td');
+    const numericTexts = cells
+      .map((__, cell) => cleanText($(cell).text()))
+      .get()
+      .filter(Boolean) as string[];
+
+    const matches = numericTexts
+      .map((text) => parseNumber(text))
+      .find((value) => value !== undefined);
+
+    const winRate = numericTexts.find((text) => /%/.test(text));
+
+    heroes.push({
+      name,
+      matches,
+      winRate
+    });
+  });
+
+  return heroes;
+}
 async function parseDotabuffOverview(dotabuffUrl: string): Promise<HeroStat[]> {
   const html = await fetchHtml(dotabuffUrl);
   const $ = cheerio.load(html);
