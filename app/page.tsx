@@ -4,10 +4,26 @@ export const revalidate = 0;
 import { readCachedDivision } from '@/lib/storage';
 import { RefreshButton } from '@/components/RefreshButton';
 
+function getHeroLabel(hero: any): string {
+  const heroName = hero?.hero || hero?.name || '';
+  const matches = hero?.matches;
+
+  if (!heroName) return '';
+  if (typeof matches === 'number' && Number.isFinite(matches)) {
+    return `${heroName} (${matches})`;
+  }
+
+  return heroName;
+}
+
 function getBanSuggestions(player: any): string[] {
-  return (player.comfortHeroes || [])
+  if (Array.isArray(player?.banSuggestions) && player.banSuggestions.length > 0) {
+    return player.banSuggestions.filter(Boolean);
+  }
+
+  return (player?.comfortHeroes || [])
     .slice(0, 3)
-    .map((h: any) => h.name)
+    .map((h: any) => h?.hero || h?.name)
     .filter(Boolean);
 }
 
@@ -85,68 +101,77 @@ export default async function Home() {
               gap: 14
             }}
           >
-            {team.players.map((player: any) => (
-              <div
-                key={player.name}
-                style={{
-                  padding: 16,
-                  borderRadius: 10,
-                  background: 'rgba(2,6,23,0.95)',
-                  border: '1px solid #172033'
-                }}
-              >
+            {team.players.map((player: any) => {
+              const hasHeroes = (player?.comfortHeroes?.length ?? 0) > 0;
+              const bans = getBanSuggestions(player);
+              const hasBans = bans.length > 0;
+              const hasNotes = (player?.notes?.length ?? 0) > 0;
+
+              return (
                 <div
+                  key={player.name}
                   style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    gap: 16,
-                    flexWrap: 'wrap'
+                    padding: 16,
+                    borderRadius: 10,
+                    background: 'rgba(2,6,23,0.95)',
+                    border: '1px solid #172033'
                   }}
                 >
-                  <div>
-                    <h4 style={{ margin: 0, color: '#e2e8f0' }}>{player.name}</h4>
-                    <div style={{ opacity: 0.7, fontSize: 13, marginTop: 4 }}>
-                      {player.roleSummary?.primaryLane || player.roleSummary?.primaryRole || 'Unknown Role'}
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'flex-start',
+                      gap: 16,
+                      flexWrap: 'wrap'
+                    }}
+                  >
+                    <div>
+                      <h4 style={{ margin: 0, color: '#e2e8f0' }}>{player.name}</h4>
+                      <div style={{ opacity: 0.7, fontSize: 13, marginTop: 4 }}>
+                        {player.roleSummary?.primaryLane || player.roleSummary?.primaryRole || player.role || 'Unknown Role'}
+                      </div>
                     </div>
+
+                    {player.dotabuffUrl ? (
+                      <a
+                        href={player.dotabuffUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          color: '#38bdf8',
+                          textDecoration: 'none',
+                          fontSize: 14
+                        }}
+                      >
+                        Dotabuff ↗
+                      </a>
+                    ) : null}
                   </div>
 
-                  {player.dotabuffUrl ? (
-                    <a
-                      href={player.dotabuffUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{
-                        color: '#38bdf8',
-                        textDecoration: 'none',
-                        fontSize: 14
-                      }}
-                    >
-                      Dotabuff ↗
-                    </a>
-                  ) : null}
-                </div>
+                  <div style={{ marginTop: 12 }}>
+                    <strong style={{ color: '#93c5fd' }}>Comfort Heroes:</strong>{' '}
+                    {hasHeroes
+                      ? player.comfortHeroes
+                          .slice(0, 5)
+                          .map((h: any) => getHeroLabel(h))
+                          .filter(Boolean)
+                          .join(', ')
+                      : 'No data'}
+                  </div>
 
-                <div style={{ marginTop: 12 }}>
-                  <strong style={{ color: '#93c5fd' }}>Comfort Heroes:</strong>{' '}
-                  {(player.comfortHeroes || [])
-                    .slice(0, 5)
-                    .map((h: any) => h.name)
-                    .join(', ') || 'No data'}
-                </div>
+                  <div style={{ marginTop: 8 }}>
+                    <strong style={{ color: '#fda4af' }}>Ban Suggestions:</strong>{' '}
+                    {hasBans ? bans.join(', ') : 'No suggestions'}
+                  </div>
 
-                <div style={{ marginTop: 8 }}>
-                  <strong style={{ color: '#fda4af' }}>Ban Suggestions:</strong>{' '}
-                  {getBanSuggestions(player).join(', ') || 'No suggestions'}
-                </div>
-
-                {player.notes?.length ? (
                   <div style={{ marginTop: 10, opacity: 0.7, fontSize: 13 }}>
-                    Notes: {player.notes.join(' | ')}
+                    <strong>Notes:</strong>{' '}
+                    {hasNotes ? player.notes.join(' | ') : 'None'}
                   </div>
-                ) : null}
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         </div>
       ))}
