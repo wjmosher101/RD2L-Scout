@@ -1,390 +1,311 @@
-import * as cheerio from 'cheerio';
-import { DEFAULT_SEASON_LABEL, USER_AGENT } from '@/lib/config';
-import type { DivisionScout, HeroStat, PlayerScout, TeamScout } from '@/lib/types';
+// lib/scrape.ts
+import * as cheerio from "cheerio";
 
-const RD2L_BASE = 'https://rd2l.gg';
-const DOTABUFF_BASE = 'https://www.dotabuff.com';
+export type HeroStat = {
+  hero: string;
+  matches: number;
+  winRate?: number;
+  kda?: number;
+  lane?: string;
+};
 
-function absoluteUrl(base: string, maybeRelative?: string): string | undefined {
-  if (!maybeRelative) return undefined;
-  if (maybeRelative.startsWith('http://') || maybeRelative.startsWith('https://')) {
-    return maybeRelative;
-  }
-  return new URL(maybeRelative, base).toString();
+export type ScoutResult = {
+  playerName: string;
+  role: string | null;
+  dotabuffUrl: string | null;
+  comfortHeroes: HeroStat[];
+  banSuggestions: string[];
+  notes: string[];
+};
+
+const UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
+
+const HERO_NAMES = [
+  "Abaddon","Alchemist","Ancient Apparition","Anti-Mage","Arc Warden","Axe","Bane","Batrider",
+  "Beastmaster","Bloodseeker","Bounty Hunter","Brewmaster","Bristleback","Broodmother",
+  "Centaur Warrunner","Chaos Knight","Chen","Clinkz","Clockwerk","Crystal Maiden","Dark Seer",
+  "Dark Willow","Dawnbreaker","Dazzle","Death Prophet","Disruptor","Doom","Dragon Knight",
+  "Drow Ranger","Earth Spirit","Earthshaker","Elder Titan","Ember Spirit","Enchantress","Enigma",
+  "Faceless Void","Grimstroke","Gyrocopter","Hoodwink","Huskar","Invoker","Io","Jakiro",
+  "Juggernaut","Keeper of the Light","Kez","Kunkka","Largo","Legion Commander","Leshrac","Lich",
+  "Lifestealer","Lina","Lion","Lone Druid","Luna","Lycan","Magnus","Marci","Mars","Medusa",
+  "Meepo","Mirana","Monkey King","Morphling","Muerta","Naga Siren","Nature's Prophet","Necrophos",
+  "Night Stalker","Nyx Assassin","Ogre Magi","Omniknight","Oracle","Outworld Destroyer",
+  "Pangolier","Phantom Assassin","Phantom Lancer","Phoenix","Primal Beast","Puck","Pudge","Pugna",
+  "Queen of Pain","Razor","Riki","Ringmaster","Rubick","Sand King","Shadow Demon","Shadow Fiend",
+  "Shadow Shaman","Silencer","Skywrath Mage","Slardar","Slark","Snapfire","Sniper","Spectre",
+  "Spirit Breaker","Storm Spirit","Sven","Techies","Templar Assassin","Terrorblade","Tidehunter",
+  "Timbersaw","Tinker","Tiny","Treant Protector","Troll Warlord","Tusk","Underlord","Undying",
+  "Ursa","Vengeful Spirit","Venomancer","Viper","Visage","Void Spirit","Warlock","Weaver",
+  "Windranger","Winter Wyvern","Witch Doctor","Wraith King","Zeus",
+];
+
+function uniq<T>(arr: T[]): T[] {
+  return [...new Set(arr)];
 }
 
-function cleanText(value?: string): string {
-  return (value || '').replace(/\s+/g, ' ').trim();
+function clampRole(role: string | null): string | null {
+  if (!role) return null;
+  const cleaned = role.trim();
+  const valid = ["Safe Lane", "Mid Lane", "Off Lane", "Support", "Roaming"];
+  const hit = valid.find((v) => cleaned.toLowerCase().includes(v.toLowerCase()));
+  return hit ?? cleaned;
 }
 
-function parseNumber(value?: string): number | undefined {
-  const text = cleanText(value).replace(/,/g, '');
-  if (!text) return undefined;
-  const num = Number(text);
-  return Number.isFinite(num) ? num : undefined;
-}
+async function fetchHtml(url: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: {
+      "user-agent": UA,
+      "accept-language": "en-US,en;q=0.9",
+      "cache-control": "no-cache",
+      pragma: "no-cache",
+    },
+    redirect: "follow",
+  });
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchHtml(url: string, tries = 3): Promise<string> {
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= tries; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'user-agent': USER_AGENT,
-          'accept-language': 'en-US,en;q=0.9',
-          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'cache-control': 'no-cache',
-          pragma: 'no-cache'
-        },
-        cache: 'no-store',
-        next: { revalidate: 0 },
-        signal: controller.signal
-      });
-
-      clearTimeout(timeout);
-
-      if (response.ok) {
-        return await response.text();
-      }
-
-      const error = new Error(
-        `Failed to fetch ${url}: ${response.status} ${response.statusText || '<none>'}`
-      );
-
-      if (response.status === 522 || response.status >= 500) {
-        lastError = error;
-      } else {
-        throw error;
-      }
-    } catch (error) {
-      clearTimeout(timeout);
-      lastError =
-        error instanceof Error ? error : new Error(`Failed to fetch ${url}`);
-    }
-
-    if (attempt < tries) {
-      await sleep(1000 * attempt);
-    }
+  if (!res.ok) {
+    throw new Error(`Fetch failed ${res.status} for ${url}`);
   }
 
-  throw lastError instanceof Error ? lastError : new Error(`Failed to fetch ${url}`);
+  return await res.text();
 }
 
-async function parseDivision(
-  divisionUrl: string
-): Promise<{ divisionName: string; seasonName: string; teamsUrl: string }> {
-  if (/\/teams\/?$/.test(divisionUrl)) {
+function normalizeText(s: string): string {
+  return s
+    .replace(/\u00a0/g, " ")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function textLines($: cheerio.CheerioAPI): string[] {
+  const raw = normalizeText($.root().text());
+  return raw
+    .split("\n")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function extractRoleFromText(lines: string[]): string | null {
+  const joined = lines.join("\n");
+
+  const roleHit =
+    joined.match(/\b(Safe Lane|Mid Lane|Off Lane|Support|Roaming)\s+Role\b/i) ||
+    joined.match(/\b(\d+%)\s+(Safe Lane|Mid Lane|Off Lane|Support|Roaming)\b/i);
+
+  if (roleHit) {
+    return clampRole(roleHit[2] || roleHit[1] || null);
+  }
+
+  return null;
+}
+
+function extractPlayerName($: cheerio.CheerioAPI, lines: string[]): string {
+  const h1 = $("h1").first().text().trim();
+  if (h1) return h1;
+
+  const firstBig = lines.find((l) => l.length > 1 && l.length < 50 && !l.includes("DOTABUFF"));
+  return firstBig || "Unknown Player";
+}
+
+function tryExtractHeroesFromTable($: cheerio.CheerioAPI): HeroStat[] {
+  const out: HeroStat[] = [];
+
+  $("table tbody tr").each((_, row) => {
+    const cells = $(row)
+      .find("td")
+      .map((__, td) => normalizeText($(td).text()))
+      .get()
+      .filter(Boolean);
+
+    if (cells.length < 3) return;
+
+    const hero =
+      $(row).find('a[href*="/heroes/"]').first().text().trim() ||
+      cells.find((c) => HERO_NAMES.includes(c));
+
+    if (!hero) return;
+
+    const nums = cells
+      .join(" ")
+      .match(/\d+(?:\.\d+)?%?/g)?.map((x) => x.trim()) ?? [];
+
+    const matches = Number(nums[0]?.replace("%", "") ?? 0);
+    const winRate = nums.find((n) => n.endsWith("%"));
+    const kdaCandidate = nums.find((n, i) => i > 0 && !n.endsWith("%"));
+
+    if (!matches || Number.isNaN(matches)) return;
+
+    out.push({
+      hero,
+      matches,
+      winRate: winRate ? Number(winRate.replace("%", "")) : undefined,
+      kda: kdaCandidate ? Number(kdaCandidate) : undefined,
+    });
+  });
+
+  return out;
+}
+
+function extractHeroesFromText(lines: string[]): HeroStat[] {
+  const out: HeroStat[] = [];
+
+  const startIdx = lines.findIndex((l) => /Most Played Heroes/i.test(l));
+  if (startIdx === -1) return out;
+
+  const slice = lines.slice(startIdx, Math.min(lines.length, startIdx + 140));
+
+  for (let i = 0; i < slice.length; i++) {
+    const hero = slice[i];
+    if (!HERO_NAMES.includes(hero)) continue;
+
+    const matchesStr = slice[i + 1];
+    const winRateStr = slice[i + 2];
+    const kdaStr = slice[i + 3];
+
+    const matches = Number(matchesStr);
+    const winRate = winRateStr?.includes("%")
+      ? Number(winRateStr.replace("%", ""))
+      : undefined;
+    const kda = kdaStr && /^\d+(\.\d+)?$/.test(kdaStr) ? Number(kdaStr) : undefined;
+
+    if (!Number.isFinite(matches) || matches <= 0) continue;
+
+    out.push({
+      hero,
+      matches,
+      winRate,
+      kda,
+    });
+  }
+
+  return out;
+}
+
+function mergeHeroes(primary: HeroStat[], fallback: HeroStat[]): HeroStat[] {
+  const map = new Map<string, HeroStat>();
+
+  for (const row of [...primary, ...fallback]) {
+    const prev = map.get(row.hero);
+    if (!prev || row.matches > prev.matches) {
+      map.set(row.hero, row);
+    }
+  }
+
+  return [...map.values()].sort((a, b) => b.matches - a.matches);
+}
+
+function laneFromRole(role: string | null): string | undefined {
+  if (!role) return undefined;
+  if (/mid/i.test(role)) return "Mid Lane";
+  if (/safe/i.test(role)) return "Safe Lane";
+  if (/off/i.test(role)) return "Off Lane";
+  if (/support/i.test(role)) return "Support";
+  if (/roaming/i.test(role)) return "Roaming";
+  return undefined;
+}
+
+function buildBanSuggestions(heroes: HeroStat[], role: string | null): string[] {
+  const preferredLane = laneFromRole(role);
+
+  const filtered = heroes
+    .filter((h) => (preferredLane ? h.lane === preferredLane || !h.lane : true))
+    .sort((a, b) => {
+      const aScore = a.matches * 2 + (a.winRate ?? 50) / 10 + (a.kda ?? 2);
+      const bScore = b.matches * 2 + (b.winRate ?? 50) / 10 + (b.kda ?? 2);
+      return bScore - aScore;
+    })
+    .slice(0, 5)
+    .map((h) => h.hero);
+
+  return uniq(filtered);
+}
+
+function extractSummaryNotes(lines: string[]): string[] {
+  const notes: string[] = [];
+  const joined = lines.join("\n");
+
+  const pro = joined.match(/Professional\s+(\d+)/i);
+  const amateur = joined.match(/Amateur\s+(\d+)/i);
+
+  if (pro) notes.push(`Professional sample: ${pro[1]} matches`);
+  if (amateur) notes.push(`Amateur sample: ${amateur[1]} matches`);
+
+  const recentTeamIdx = lines.findIndex((l) => /Recent Teams/i.test(l));
+  if (recentTeamIdx !== -1) {
+    const teamLine = lines.slice(recentTeamIdx + 1, recentTeamIdx + 10).find((l) => /\d{4}-\d{2}-\d{2}/.test(l));
+    if (teamLine) notes.push(`Recent team activity found on Dotabuff esports page`);
+  }
+
+  return notes;
+}
+
+export async function scrapeDotabuffEsportsHeroPage(url: string): Promise<ScoutResult> {
+  const html = await fetchHtml(url);
+  const $ = cheerio.load(html);
+  const lines = textLines($);
+
+  const playerName = extractPlayerName($, lines);
+  const role = extractRoleFromText(lines);
+
+  const tableHeroes = tryExtractHeroesFromTable($);
+  const textHeroes = extractHeroesFromText(lines);
+  const mergedHeroes = mergeHeroes(tableHeroes, textHeroes)
+    .slice(0, 8)
+    .map((h) => ({ ...h, lane: laneFromRole(role) }));
+
+  const banSuggestions = buildBanSuggestions(mergedHeroes, role);
+  const notes = extractSummaryNotes(lines);
+
+  if (!mergedHeroes.length) {
+    notes.unshift("Dotabuff esports page loaded, but Most Played Heroes could not be parsed.");
+  }
+
+  return {
+    playerName,
+    role,
+    dotabuffUrl: url,
+    comfortHeroes: mergedHeroes,
+    banSuggestions,
+    notes,
+  };
+}
+
+/**
+ * This is the wrapper your UI/API should call.
+ * Pass in the dotabuff esports hero URL if you already have it.
+ */
+export async function scoutPlayerFromDotabuff(input: {
+  playerName: string;
+  dotabuffEsportsHeroUrl?: string | null;
+}): Promise<ScoutResult> {
+  if (!input.dotabuffEsportsHeroUrl) {
     return {
-      divisionName: 'EST-TUES',
-      seasonName: DEFAULT_SEASON_LABEL,
-      teamsUrl: divisionUrl
+      playerName: input.playerName,
+      role: null,
+      dotabuffUrl: null,
+      comfortHeroes: [],
+      banSuggestions: [],
+      notes: ["No Dotabuff esports hero URL was provided."],
     };
   }
 
-  const html = await fetchHtml(divisionUrl);
-  const $ = cheerio.load(html);
-
-  const divisionName = cleanText($('h3').first().text()) || 'RD2L Division';
-
-  const activeSeasonRow = $('h4')
-    .filter((_, el) => cleanText($(el).text()).toLowerCase() === 'active season')
-    .first()
-    .nextAll('table')
-    .first()
-    .find('tr')
-    .eq(1);
-
-  const seasonName =
-    cleanText(activeSeasonRow.find('td').first().text()) || DEFAULT_SEASON_LABEL;
-
-  let teamsUrl = activeSeasonRow
-    .find('a')
-    .filter((_, el) => cleanText($(el).text()).toLowerCase() === 'teams')
-    .attr('href');
-
-  if (!teamsUrl) {
-    teamsUrl = $('a')
-      .filter((_, el) => cleanText($(el).text()).toLowerCase() === 'teams')
-      .first()
-      .attr('href');
-  }
-
-  const absoluteTeamsUrl = absoluteUrl(RD2L_BASE, teamsUrl);
-  if (!absoluteTeamsUrl) {
-    throw new Error(`Could not find teams link on division page: ${divisionUrl}`);
-  }
-
-  return {
-    divisionName,
-    seasonName,
-    teamsUrl: absoluteTeamsUrl
-  };
-}
-
-async function parseTeams(teamsUrl: string): Promise<TeamScout[]> {
-  const html = await fetchHtml(teamsUrl);
-  const $ = cheerio.load(html);
-
-  const teamsMap = new Map<string, string>();
-
-  $('a[href*="/teams/"]').each((_, el) => {
-    const name = cleanText($(el).text());
-    const href = $(el).attr('href');
-    const teamUrl = absoluteUrl(RD2L_BASE, href);
-
-    if (!name || !teamUrl) return;
-    teamsMap.set(name, teamUrl);
-  });
-
-  return Array.from(teamsMap.entries()).map(([name, teamUrl]) => ({
-    name,
-    teamUrl,
-    players: []
-  }));
-}
-
-function buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl: string): string | undefined {
-  const playerId = rd2lProfileUrl.match(/\/profile\/(\d+)/)?.[1];
-  if (!playerId) return undefined;
-  return `${DOTABUFF_BASE}/players/${playerId}`;
-}
-
-function buildEsportsUrl(dotabuffUrl: string): string {
-  const playerId = dotabuffUrl.match(/\/players\/(\d+)/)?.[1];
-  if (!playerId) {
-    throw new Error(`Could not extract player ID from Dotabuff URL: ${dotabuffUrl}`);
-  }
-  return `${DOTABUFF_BASE}/esports/players/${playerId}`;
-}
-
-function extractHeroStatsFromTables($: cheerio.CheerioAPI, limit: number): HeroStat[] {
-  const heroes: HeroStat[] = [];
-  const seen = new Set<string>();
-
-  $('table tbody tr').each((_, row) => {
-    if (heroes.length >= limit) return;
-
-    const heroLink = $(row).find('a[href*="/heroes/"]').first();
-    if (!heroLink.length) return;
-
-    const heroName = cleanText(heroLink.text());
-    if (!heroName || seen.has(heroName)) return;
-
-    const cells = $(row).find('td');
-    const cellTexts = cells
-      .map((__, cell) => cleanText($(cell).text()))
-      .get()
-      .filter(Boolean) as string[];
-
-    const matchesText = cellTexts.find((text) => /^\d[\d,]*$/.test(text));
-    const winRate = cellTexts.find((text) => /%/.test(text));
-
-    heroes.push({
-      name: heroName,
-      matches: matchesText ? parseNumber(matchesText) : undefined,
-      winRate: winRate || undefined
-    });
-
-    seen.add(heroName);
-  });
-
-  return heroes;
-}
-
-function extractHeroStatsFromEsportsText(pageText: string, limit = 5): HeroStat[] {
-  const heroes: HeroStat[] = [];
-
-  const start = pageText.indexOf('Most Played Heroes');
-  const end = pageText.indexOf('Recent Matches');
-
-  if (start === -1 || end === -1 || end <= start) {
-    return heroes;
-  }
-
-  const block = pageText.slice(start, end);
-  const regex = /([A-Z][A-Za-z' -]+?)\s+(\d{1,4})\s+(\d{1,3}(?:\.\d{1,2})?%)/g;
-
-  let match: RegExpExecArray | null;
-  const seen = new Set<string>();
-
-  while ((match = regex.exec(block)) !== null) {
-    const name = cleanText(match[1]);
-    const matches = parseNumber(match[2]);
-    const winRate = match[3];
-
-    if (!name || seen.has(name)) continue;
-
-    if (
-      [
-        'Most Played Heroes',
-        'Overview Farm',
-        'Hero Matches Win',
-        'Core Role',
-        'Recent Matches'
-      ].includes(name)
-    ) {
-      continue;
-    }
-
-    heroes.push({
-      name,
-      matches,
-      winRate
-    });
-
-    seen.add(name);
-
-    if (heroes.length >= limit) break;
-  }
-
-  return heroes;
-}
-
-async function parseDotabuffEsports(dotabuffUrl: string, seasonLabel: string) {
-  const esportsUrl = buildEsportsUrl(dotabuffUrl);
-  const html = await fetchHtml(esportsUrl);
-  const $ = cheerio.load(html);
-
-  const pageText = cleanText($('body').text());
-
-  const primaryLane =
-    pageText.match(/\b(Safe Lane|Mid Lane|Off Lane|Roaming|Support)\b/i)?.[1];
-
-  const primaryRole =
-    pageText.match(/\b(Carry|Mid|Offlane|Support|Roamer)\b/i)?.[1] || primaryLane;
-
-  let heroes = extractHeroStatsFromEsportsText(pageText, 5);
-
-  if (!heroes.length) {
-    heroes = extractHeroStatsFromTables($, 5);
-  }
-
-  return {
-    url: esportsUrl,
-    roleSummary: {
-      seasonLabel,
-      leagueName: seasonLabel,
-      primaryRole,
-      primaryLane,
-      heroes
-    }
-  };
-}
-
-async function buildPlayerScout(name: string, rd2lProfileUrl: string): Promise<PlayerScout> {
-  const dotabuffUrl = buildDotabuffUrlFromRd2lProfile(rd2lProfileUrl);
-
-  const player: PlayerScout = {
-    name,
-    rd2lProfileUrl,
-    dotabuffUrl,
-    comfortHeroes: [],
-    notes: []
-  };
-
-  if (!dotabuffUrl) {
-    player.notes.push('Could not derive Dotabuff URL from RD2L profile URL.');
-    return player;
-  }
-
   try {
-    const esports = await parseDotabuffEsports(dotabuffUrl, DEFAULT_SEASON_LABEL);
-    player.dotabuffEsportsUrl = esports.url;
-    player.roleSummary = esports.roleSummary;
-
-    if (esports.roleSummary?.heroes?.length) {
-      player.comfortHeroes = esports.roleSummary.heroes;
-      player.notes.push('Using esports hero pool as primary comfort data.');
-    } else {
-      player.notes.push('No esports hero pool found.');
-    }
-  } catch (error) {
-    player.notes.push(
-      error instanceof Error ? error.message : 'Could not parse Dotabuff esports page.'
-    );
+    return await scrapeDotabuffEsportsHeroPage(input.dotabuffEsportsHeroUrl);
+  } catch (err) {
+    return {
+      playerName: input.playerName,
+      role: null,
+      dotabuffUrl: input.dotabuffEsportsHeroUrl,
+      comfortHeroes: [],
+      banSuggestions: [],
+      notes: [
+        err instanceof Error
+          ? `Dotabuff scrape failed: ${err.message}`
+          : "Dotabuff scrape failed for an unknown reason.",
+      ],
+    };
   }
-
-  return player;
-}
-
-async function parseTeamRoster(team: TeamScout): Promise<TeamScout> {
-  const html = await fetchHtml(team.teamUrl);
-  const $ = cheerio.load(html);
-
-  const roster: Array<{ name: string; rd2lProfileUrl: string }> = [];
-
-  $('a[href*="/profile/"]').each((_, el) => {
-    const name = cleanText($(el).text());
-    const href = $(el).attr('href');
-    const rd2lProfileUrl = absoluteUrl(RD2L_BASE, href);
-
-    if (!name || !rd2lProfileUrl) return;
-    roster.push({ name, rd2lProfileUrl });
-  });
-
-  const uniqueRoster = Array.from(
-    new Map(roster.map((entry) => [entry.rd2lProfileUrl, entry])).values()
-  );
-
-  const players: PlayerScout[] = [];
-
-  for (const player of uniqueRoster) {
-    try {
-      const parsed = await buildPlayerScout(player.name, player.rd2lProfileUrl);
-      players.push(parsed);
-      await sleep(250);
-    } catch (error) {
-      players.push({
-        name: player.name,
-        rd2lProfileUrl: player.rd2lProfileUrl,
-        dotabuffUrl: buildDotabuffUrlFromRd2lProfile(player.rd2lProfileUrl),
-        comfortHeroes: [],
-        notes: [error instanceof Error ? error.message : 'Failed to process player.']
-      });
-    }
-  }
-
-  return {
-    ...team,
-    captain: uniqueRoster[0]?.name,
-    players
-  };
-}
-
-export async function buildDivisionScout(divisionUrl: string): Promise<DivisionScout> {
-  const division = await parseDivision(divisionUrl);
-  const teams = await parseTeams(division.teamsUrl);
-
-  const hydratedTeams: TeamScout[] = [];
-
-  for (const team of teams) {
-    try {
-      const hydratedTeam = await parseTeamRoster(team);
-      hydratedTeams.push(hydratedTeam);
-      await sleep(500);
-    } catch (error) {
-      hydratedTeams.push({
-        ...team,
-        players: [],
-        notes: [error instanceof Error ? error.message : 'Failed to parse team roster.']
-      } as TeamScout);
-    }
-  }
-
-  return {
-    divisionName: division.divisionName,
-    seasonName: division.seasonName,
-    divisionUrl,
-    teamsUrl: division.teamsUrl,
-    lastUpdated: new Date().toISOString(),
-    teams: hydratedTeams
-  };
 }
